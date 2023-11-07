@@ -102,10 +102,11 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     private Queue<Message> buffer = new LinkedList<>();
     private int[] windowA;
     private int[] windowTrackerA;
-    private Message[] messageTracker;
+    private String[] messageTracker;
 
     private int[] windowB;
     private int[] windowTrackerB;
+    private String[] messageTrackerB;
 
     protected int checkSum(int seq, int ack, String newPayload) {
         int total = 0;
@@ -153,10 +154,10 @@ public class StudentNetworkSimulator extends NetworkSimulator {
 
     // Shift message tracker over
     // Used to store previous messages in case we need to retransmit
-    public Message[] shiftMessageTracker(Message[] tracker) {
-        Message prev = new Message("");
-        for (int i = tracker.length - 1; i >= 0; i--) {
-            Message temp = tracker[i];
+    public String[] shiftMessageTracker(String[] tracker) {
+        String prev = "";
+        for (int i = this.WindowSize - 1; i >= 0; i--) {
+            String temp = tracker[i];
             tracker[i] = prev;
             prev = temp;
         }
@@ -215,14 +216,26 @@ public class StudentNetworkSimulator extends NetworkSimulator {
 
         // Check to see if we have any space left in window to send packets
         if (seqIndexA < this.WindowSize) {
+            if (seqIndexA == 0) {
+                startTimer(0, RxmtInterval);
+            }
+
             // Get data ready
             Message currentMessage = buffer.remove();
-            int check = checkSum(windowA[seqIndexA], 0, currentMessage.getData());
-            Packet packet = new Packet(windowA[seqIndexA], 0, check, currentMessage.getData());
+            String stringMessage = currentMessage.getData();
+            int check = checkSum(windowA[seqIndexA], 0, stringMessage);
+            Packet packet = new Packet(windowA[seqIndexA], 0, check, stringMessage);
             // Save message in case we need to retransmit it
-            messageTracker[seqIndexA] = currentMessage;
+            messageTracker[seqIndexA] = stringMessage;
             // Increase the index
             seqIndexA++;
+
+            System.out.println("");
+            System.out.println("///////////////////////////////");
+            System.out.println("A OUTPUT: Sending this packet...");
+            System.out.println(packet.toString());
+            System.out.println("seqIndexA: " + seqIndexA);
+
             toLayer3(0, packet);
         }
 
@@ -241,6 +254,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         System.out.println("windowA START: " + Arrays.toString(windowA));
         System.out.println("windowTrackerA START: " + Arrays.toString(windowTrackerA));
         System.out.println("messageTracker START: " + Arrays.toString(messageTracker));
+        System.out.println("seqIndexA: " + seqIndexA);
 
         // Check the checksum
         int check = checkSum(packet.getSeqnum(), packet.getAcknum(), packet.getPayload());
@@ -262,24 +276,29 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         int shift = numOfShift(windowTrackerA);
 
         if (shift > 0) {
+            // If we are shifting the window, then reset the timer
+            stopTimer(0);
+
             int[] newWindowA = windowA;
             int[] newWindowTrackerA = windowTrackerA;
-            Message[] newMessageTracker = messageTracker;
+            String[] newMessageTracker = messageTracker;
             for (int i = 0; i < shift; i++) {
                 newWindowA = shiftWindow(newWindowA);
                 newWindowTrackerA = shiftTracker(newWindowTrackerA);
                 newMessageTracker = shiftMessageTracker(newMessageTracker);
-                seqIndexA = seqIndexA - 1;
+                seqIndexA = Math.max(0, seqIndexA - 1);
             }
             // Adjust values
             windowA = newWindowA;
-            newWindowTrackerA = windowTrackerA;
+            windowTrackerA = newWindowTrackerA;
+            messageTracker = newMessageTracker;
         }
 
         System.out.println("-----------------");
         System.out.println("windowA END: " + Arrays.toString(windowA));
         System.out.println("windowTrackerA END: " + Arrays.toString(windowTrackerA));
         System.out.println("messageTracker END: " + Arrays.toString(messageTracker));
+        System.out.println("seqIndexA: " + seqIndexA);
         System.out.println("-----------------");
 
     }
@@ -289,8 +308,28 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     // the retransmission of packets. See startTimer() and stopTimer(), above,
     // for how the timer is started and stopped.
     protected void aTimerInterrupt() {
-        System.out.println("");
+        System.out.println("//////////////////");
         System.out.println("A TIMER INTERRUPT");
+
+        // // Check to see if need to retransmit anything
+        // boolean test = false;
+        // for (int x = 0; x < windowTrackerA.length; x++){
+        // if (windowTrackerA[x] == )
+        // }
+
+        for (int i = 0; i < windowTrackerA.length; i++) {
+            // If 0 then has not been acked in window yet
+            if (windowTrackerA[i] == 0 && messageTracker[i] != "") {
+                String payload = messageTracker[i];
+                int check = checkSum(windowA[i], 0, payload);
+                Packet retransmit = new Packet(windowA[i], 0, check, payload);
+                System.out.println("Retransmitting... " + retransmit.toString());
+                toLayer3(0, retransmit);
+            }
+        }
+
+        // Retransmit outstanding packets
+        startTimer(0, RxmtInterval);
 
     }
 
@@ -305,9 +344,9 @@ public class StudentNetworkSimulator extends NetworkSimulator {
             windowA[i] = i;
         }
 
-        messageTracker = new Message[this.WindowSize];
+        messageTracker = new String[this.WindowSize];
         for (int x = 0; x < this.WindowSize; x++) {
-            messageTracker[x] = new Message("");
+            messageTracker[x] = "";
         }
 
     }
@@ -324,6 +363,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         System.out.println("-----------------");
         System.out.println("windowB START: " + Arrays.toString(windowB));
         System.out.println("windowTrackerB START: " + Arrays.toString(windowTrackerB));
+        System.out.println("messageTrackerB START: " + Arrays.toString(messageTrackerB));
 
         // Check the checksum
         int check = checkSum(packet.getSeqnum(), packet.getAcknum(), packet.getPayload());
@@ -334,11 +374,16 @@ public class StudentNetworkSimulator extends NetworkSimulator {
 
         // Add to tracker
         int trackerIndex = seqNumToIndex(windowB, packet.getSeqnum());
+        // If out of bounds, we have already acked so re send it
         if (trackerIndex == -1) {
             System.out.println("PACKET OUT OF BOUNDS IN B INPUT");
+            Packet retransmit = new Packet(0, packet.getSeqnum(), packet.getSeqnum());
+            toLayer3(1, retransmit);
             return;
         }
+
         windowTrackerB[trackerIndex] = 1;
+        messageTrackerB[trackerIndex] = packet.getPayload();
 
         // Check if we need to shift the window at all
         int shift = numOfShift(windowTrackerB);
@@ -346,22 +391,30 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         if (shift > 0) {
             int[] newWindowB = windowB;
             int[] newWindowTrackerB = windowTrackerB;
+            String[] newMessageTrackerB = messageTrackerB;
             for (int i = 0; i < shift; i++) {
+                // Send ack back
+                Packet ackPacket = new Packet(0, newWindowB[0], newWindowB[0]);
+                toLayer3(1, ackPacket);
+
+                // Send to layer 5
+                toLayer5(newMessageTrackerB[0]);
+
                 newWindowB = shiftWindow(newWindowB);
                 newWindowTrackerB = shiftTracker(newWindowTrackerB);
+                newMessageTrackerB = shiftMessageTracker(messageTrackerB);
             }
             windowB = newWindowB;
-            newWindowTrackerB = windowTrackerB;
+            windowTrackerB = newWindowTrackerB;
+            messageTrackerB = newMessageTrackerB;
+
         }
 
         System.out.println("-----------------");
         System.out.println("windowB END: " + Arrays.toString(windowB));
         System.out.println("windowTrackerB END: " + Arrays.toString(windowTrackerB));
+        System.out.println("messageTrackerB END: " + Arrays.toString(messageTrackerB));
         System.out.println("-----------------");
-
-        // Send ack back
-        Packet ackPacket = new Packet(0, packet.getSeqnum(), packet.getSeqnum());
-        toLayer3(1, ackPacket);
 
     }
 
@@ -374,6 +427,11 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         windowB = new int[this.WindowSize];
         for (int i = 0; i < this.WindowSize; i++) {
             windowB[i] = i;
+        }
+
+        messageTrackerB = new String[this.WindowSize];
+        for (int x = 0; x < this.WindowSize; x++) {
+            messageTrackerB[x] = "";
         }
     }
 
