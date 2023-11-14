@@ -369,8 +369,8 @@ public class StudentNetworkSimulator extends NetworkSimulator {
 
         //calcualting the ratios
         int totalPackets = packetsSent + retransmissionCount;
-        int totalNotLost = totalPackets - lostPacketsCount;
-        int totalNotCorrupted = totalPackets - corruptedPacketsCount;
+        double totalNotLost = totalPackets - lostPacketsCount;
+        double totalNotCorrupted = totalPackets - corruptedPacketsCount;
 
         double ratioLost = (lostPacketsCount / totalNotCorrupted);
         double ratioCorrupted = (corruptedPacketsCount / totalNotLost);
