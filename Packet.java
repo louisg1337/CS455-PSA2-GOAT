@@ -4,7 +4,6 @@ public class Packet
     private int acknum;
     private int checksum;
     private String payload;
-    private int[] sack; //new field for selective acknowledgement
     
     public Packet(Packet p)
     {
