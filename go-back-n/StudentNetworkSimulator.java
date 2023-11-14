@@ -98,103 +98,49 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     // state information for A or B.
     // Also add any necessary methods (e.g. checksum of a String)
 
-    private int seqIndexA = 0;
-    private Queue<Message> buffer = new LinkedList<>();
-    private int[] windowA;
-    private int [] windowTrackerA;
-    private String[] messageTracker;
-    private int base;  // The sequence number of the oldest unacknowledged packet
-    private int nextSeqNum;  // The sequence number to assign to the next outgoing packet
-    private int expectedSeqNum;  // The expected sequence number of the incoming packet at B
-    private boolean[] ackReceived;  // To keep track of received ACKs
+    // Window buffer for tracking sent packets
+    Packet[] sentBuffer;
 
-    private int numSent;
-    private int numRetransmissions;
-
-    
-
-    protected int checkSum(int seq, int ack, String newPayload) {
-        int total = 0;
-        total += seq;
-        total += ack;
-
-        if (newPayload.length() == 0) {
-            return total;
-        }
-
-        for (int i = 0; i < newPayload.length(); i++) {
-            char ch = newPayload.charAt(i);
-            total += (int) ch;
-        }
-
-        return total;
+    // Double list for storing communication times
+    LinkedList<Double> roundTripTimes = new LinkedList<Double>();
+    // Double array for tracking sent and acknowledgment times
+    double[] timeSent;
+    double[] timeAcknowledged;
+    // Int variable for tracking the next sequence number A will send to B
+    private int nextSequenceNumber = FirstSeqNo;
+    // Int variable for keeping track of the base of the sending window
+    private int base = 1;
+    // Int variable for tracking the next sequence number B expects to receive
+    private int expectedSequenceNumber = 1;
+    // Initialize a new packet for impending acknowledgment transmission later
+    Packet acknowledgmentPacket = new Packet(0, 0, 0);
+    // Int variable for tracking the number of packets sent
+    private int packetsSent = 0; 
+    // Int variable tracking the number of retransmissions
+    private int retransmissionCount = 0;
+    // Int variable tracking the number of packets received 
+    private int receivedCount = 0;
+    // Int variable for the number of packets sent to layer 5
+    private int packetsToLayer5 = 0;
+    // Int variable tracking the number of lost packets
+    private int lostPacketsCount = 0;
+    // Int variable tracking the number of corrupted packets received
+    private int corruptedPacketsCount = 0;
+    // Int variable for the number of ACKs sent by B
+    private int acknowledgmentsSent = 0;
+    // Int variable for the number of ACKs received by A
+    private int acknowledgmentsReceived = 0;
+   
+    // Translate String 'data' into an int, and add this to the sequence and acknowledgment to generate a checksum
+    // Then return that checksum
+    protected int calculateChecksum(int sequenceNumber, int acknowledgmentNumber, String data) {
+        // Generate int representation of our payload
+        int payloadHashCode = data.hashCode();
+        // Return sequence + acknowledgment + int(payload)
+        return sequenceNumber + acknowledgmentNumber + payloadHashCode;
     }
 
-    // Shifts the window over
-    // i.e. [0,1,2,3] -> [1,2,3,4]
-    public int[] shiftWindow(int[] window) {
-        int[] newArray = new int[this.WindowSize];
-
-        int x = 0;
-        for (int i = window[0] + 1; i < window[0] + 1 + this.WindowSize; i++) {
-            newArray[x] = i % (this.WindowSize + 1);
-            x++;
-        }
-
-        return newArray;
-    }
-
-    // Shifts the tracker over
-    // i.e. [1,0,1,1] -> [0,1,1,0]
-    public int[] shiftTracker(int[] tracker) {
-        int prev = 0;
-        for (int i = this.WindowSize - 1; i >= 0; i--) {
-            int temp = tracker[i];
-            tracker[i] = prev;
-            prev = temp;
-        }
-
-        return tracker;
-    }
-
-    // Shift message tracker over
-    // Used to store previous messages in case we need to retransmit
-    public String[] shiftMessageTracker(String[] tracker) {
-        String prev = "";
-        for (int i = this.WindowSize - 1; i >= 0; i--) {
-            String temp = tracker[i];
-            tracker[i] = prev;
-            prev = temp;
-        }
-        return tracker;
-    }
-
-    // Takes in the seqNumber sent, and finds the corresponding index in window
-    // Use this so that we can keep windowTracker updated to know which packets were
-    // received
-    public int seqNumToIndex(int[] window, int seq) {
-        for (int i = 0; i < window.length; i++) {
-            if (window[i] == seq) {
-                return i;
-            }
-        }
-
-        return -1;
-    }
-
-    // Determines how many times we can shift over the window given what packets
-    // were acked
-    public int numOfShift(int[] tracker) {
-        int shift = 0;
-        for (int i = 0; i < tracker.length; i++) {
-            if (tracker[i] == 1) {
-                shift++;
-            } else {
-                return shift;
-            }
-        }
-        return shift;
-    }
+  
 
     // This is the constructor. Don't touch!
     public StudentNetworkSimulator(int numMessages,
@@ -216,163 +162,230 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     // the data in such a message is delivered in-order, and correctly, to
     // the receiving upper layer.
     protected void aOutput(Message message) {
-        if (nextSeqNum < base + WindowSize) {
-            if (base == nextSeqNum) {
-                startTimer(0, RxmtInterval);
+        // Store data from received message in String variable for use in payload later
+        String data = message.getData();
+        if (nextSequenceNumber < base + WindowSize) {
+            // Generate checksum for impending packet creation
+            int checksum = calculateChecksum(nextSequenceNumber, -1, data);
+            // Create a new packet with the generated checksum
+            Packet packet = new Packet(nextSequenceNumber, -1, checksum, data);
+            // Print String representation of the packet
+            System.out.println("aOutput received: " + packet.toString());
+            // If we reached the end of the array...
+            if (nextSequenceNumber > WindowSize) {
+                System.out.println("Wrapping Around");
+                // Wrap around
+                sentBuffer[nextSequenceNumber % LimitSeqNo] = packet;
+            } else {
+                // Otherwise, just add the new packet to the sending buffer (will be removed once acknowledgment received)        
+                sentBuffer[nextSequenceNumber] = packet;
             }
-    
-            String stringMessage = message.getData();
-            int check = checkSum(nextSeqNum, 0, stringMessage);
-            Packet packet = new Packet(nextSeqNum % LimitSeqNo, 0, check, stringMessage);
-    
-            // Send the packet to layer 3
-            toLayer3(0, packet);
-            numSent ++;
-    
-            // Update variables
-            messageTracker[nextSeqNum % WindowSize] = stringMessage;
-            nextSeqNum++;
+            // Send the packet to layer 3 of B
+            toLayer3(A, packet);
+            // Record start time and add to the list
+            long startTime = System.nanoTime();
+            System.out.println("Time sent: " + startTime);
+            timeSent[nextSequenceNumber] = startTime;
+            // Increment the packetsSent counter
+            packetsSent++;
+            System.out.println("aOutput sent: " + packet.toString());
+            // If the base of the window gets slid over but nextSequenceNumber is not updated...
+            if (base == nextSequenceNumber) {
+                // Start a timer for A for the time specified by the delay inputted by the user
+                // Triggering a timeout in which lost packets are retransmitted
+                startTimer(A, RxmtInterval);
+            }
+            // Increment nextSequenceNumber
+            nextSequenceNumber++;
         } else {
-            // Buffer the message since the window is full
-            buffer.add(message);
-        }
-    }
-    
-    protected void aInput(Packet packet) {
-        int check = checkSum(packet.getSeqnum(), packet.getAcknum(), packet.getPayload());
-    
-        if (check != packet.getChecksum() || packet.getAcknum() < base || packet.getAcknum() >= base + WindowSize) {
-            // Drop the packet if it's corrupted or out of window
             return;
         }
-    
-        // Mark the corresponding packet as acknowledged
-        int ackIndex = packet.getAcknum() - base;
-        if (ackIndex >= 0 && ackIndex < ackReceived.length) {
-            ackReceived[ackIndex] = true;
-        }
-    
-        // Slide the window if the base packet is acknowledged
-        while (ackReceived.length > 0 && ackReceived[0]) {
-            ackReceived = Arrays.copyOfRange(ackReceived, 1, ackReceived.length);
-            base++;
-            stopTimer(0);
-    
-            // Check if there are buffered messages to send
-            if (!buffer.isEmpty()) {
-                Message bufferedMessage = buffer.remove();
-                aOutput(bufferedMessage);
+    }
+
+    protected void aInput(Packet receivedPacket) {
+        // Record acknowledgment time and add to the list
+        double acknowledgmentTime = System.nanoTime();
+        System.out.println("Acknowledgment time: " + acknowledgmentTime);
+        timeAcknowledged[nextSequenceNumber] = acknowledgmentTime;
+        // Make a copy of the received packet and store it as Packet 'packet'
+        Packet packet = new Packet(receivedPacket);
+        // Print String representation of Packet 'packet'
+        System.out.println("aInput received: " + packet.toString());
+        // Store fields of 'packet'
+        int sequenceNumber = packet.getSeqnum();
+        int acknowledgmentNumber = packet.getAcknum();
+        int checksum = packet.getChecksum();
+        // Calculate what checksum should be and store it in the variable 'expectedChecksum'
+        int expectedChecksum = sequenceNumber + acknowledgmentNumber;
+        // Compare this calculated checksum with that of the packet received
+        // If no corruption...
+        if (checksum == expectedChecksum) {
+            // Update the base
+            base = packet.getAcknum() + 1;
+            // If we have slid the base of our window over to the next sequence number...
+            if (base == nextSequenceNumber) {
+                // Stop the timer because we are where we want to be
+                stopTimer(A);
+                acknowledgmentsReceived++;
+            } else {
+                // Otherwise, trigger a timeout in which we will retransmit not acknowledged packets
+                startTimer(A, RxmtInterval);
             }
+        } else {
+            // Increment corrupted packets counter
+            corruptedPacketsCount++;
         }
     }
 
     // This routine will be called when A's timer expires.
     protected void aTimerInterrupt() {
-        // Retransmit the entire window
-        for (int i = base; i < nextSeqNum; i++) {
-            if (i < base + WindowSize) {
-                String message = messageTracker[i % WindowSize];
-                int check = checkSum(i, 0, message);
-                Packet packet = new Packet(i % LimitSeqNo, 0, check, message);
-                toLayer3(0, packet);
-                numRetransmissions ++;
+        // Start a timer for retransmission
+        startTimer(A, RxmtInterval);
+        // Resend all packets previously sent but not yet acknowledged (waiting in send buffer)
+        for (int i = base; i < nextSequenceNumber; i++) {
+            // If we are past the window...
+            if (i > WindowSize) {
+                // Print String representation of the packet 
+                System.out.println("aTimerInterrupt (Wrap): " + sentBuffer[i % LimitSeqNo].toString());
+                // Print sequence number
+                System.out.println("nextSequenceNumber = " + nextSequenceNumber);
+                // Send the packet to layer 3
+                toLayer3(A, sentBuffer[i % LimitSeqNo]);
+                // Increment packetsSent and retransmission counters
+                packetsSent++;
+                retransmissionCount++;
+            } else {
+                // Print String representation of the packet
+                System.out.println("aTimerInterrupt: " + sentBuffer[i].toString());
+                // Send the packet to layer 3
+                toLayer3(A, sentBuffer[i]);
+                // Increment packetsSent and retransmission counters
+                packetsSent++;
+                retransmissionCount++;
             }
         }
-        startTimer(0, RxmtInterval);
     }
-
-
 
     // This routine will be called once, before any of your other A-side
     // routines are called. It can be used to do any required
-    // initialization (e.g. of member variables you add to control the state
+    // initialization (e.g., of member variables you add to control the state
     // of entity A).
     protected void aInit() {
-        windowTrackerA = new int[this.WindowSize];
-        windowA = new int[this.WindowSize];
-        for (int i = 0; i < this.WindowSize; i++) {
-            windowA[i] = i;
-        }
-
-        messageTracker = new String[this.WindowSize];
-        for (int x = 0; x < this.WindowSize; x++) {
-            messageTracker[x] = "";
-        }
-        base = FirstSeqNo;
-        nextSeqNum = FirstSeqNo;
-        ackReceived = new boolean[WindowSize];
-        Arrays.fill(ackReceived, false);
-        numRetransmissions = 0;
-        numSent = 0;
+        // Initialize the window buffer to windowSize + 1, to allow for wrap around
+        sentBuffer = new Packet[LimitSeqNo];
+        timeSent = new double[1050];
+        timeAcknowledged = new double[1050];
     }
 
-// This routine will be called whenever a packet sent from the A-side
-// (i.e. as a result of a toLayer3() being done by an A-side procedure)
-// arrives at the B-side. "packet" is the (possibly corrupted) packet
-// sent from the A-side.
-protected void bInput(Packet packet) {
-    System.out.println("B Input received this packet: " + packet.toString());
-
-    // Check the checksum
-    int check = checkSum(packet.getSeqnum(), packet.getAcknum(), packet.getPayload());
-    System.out.println("B Input checksum: " + check);
-    if (check != packet.getChecksum()) {
-        // Drop the packet if the checksum is incorrect
-        System.out.println("B Input: Invalid checksum");
-        return;
-    }
-
-    // If the packet is in order and within the receiver window
-    if (packet.getSeqnum() == expectedSeqNum) {
-        System.out.println("B Input: Packet is in order!");
-        // Deliver the packet to the upper layer
-        toLayer5(packet.getPayload());
-        // Send an ACK for the received packet
-        Packet ackPacket = new Packet(0, expectedSeqNum, checkSum(0, expectedSeqNum, ""), "");
-        toLayer3(1, ackPacket);
-        // Move to the next expected sequence number
-        expectedSeqNum = (expectedSeqNum + 1) % LimitSeqNo;
-
-        // Process any buffered in-order packets
-        while (!buffer.isEmpty() && buffer.peek().getData().equals(expectedSeqNum)) {
-            Message bufferedMessage = buffer.remove();
-            toLayer5(bufferedMessage.getData());
-            Packet bufferedAckPacket = new Packet(0, expectedSeqNum, checkSum(0, expectedSeqNum, ""), "");
-            toLayer3(1, bufferedAckPacket);
-            expectedSeqNum = (expectedSeqNum + 1) % LimitSeqNo;
+    // This routine will be called whenever a packet numSent from the A-side
+    // (i.e. as a result of a toLayer3() being done by an A-side procedure)
+    // arrives at the B-side. "packet" is the (possibly corrupted) packet
+    // numSent from the A-side.
+    protected void bInput(Packet receivedPacket) {
+        // Increment the received counter
+        receivedCount++;
+        // Make a copy of the received packet and store it as Packet 'packet'
+        Packet packet = new Packet(receivedPacket);
+        // Print String representation of Packet 'packet'
+        System.out.println("bInput received: " + packet.toString());
+        // Print sequence number
+        System.out.println("nextSequenceNumber = " + nextSequenceNumber);
+        // Print expected sequence number
+        System.out.println("expectedSequenceNumber = " + expectedSequenceNumber);
+        // Store fields of 'packet'
+        int sequenceNumber = packet.getSeqnum();
+        int acknowledgmentNumber = packet.getAcknum();
+        int checksum = packet.getChecksum();
+        String payload = packet.getPayload();
+        // Calculate what checksum should be and store it in the variable 'expectedChecksum'
+        int expectedChecksum = calculateChecksum(sequenceNumber, acknowledgmentNumber, payload);
+        // Print this calculated checksum
+        System.out.println("Checksum should be: " + expectedChecksum);
+        // Declare variable for storing acknowledgment checksum
+        int acknowledgmentChecksum;
+        // Compare calculated checksum with that of the packet received, as well as the sequence number
+        // If the sequence number and checksum are what we expect...
+        if ((sequenceNumber == expectedSequenceNumber) && (checksum == expectedChecksum)) {
+            // Send the payload to layer 5
+            toLayer5(payload);
+            // Increment the packetsToLayer5 counter
+            packetsToLayer5++;
+            // Generate acknowledgment number for acknowledgment packet
+            acknowledgmentNumber = sequenceNumber;
+            // Generate new checksum for acknowledgment packet
+            acknowledgmentChecksum = sequenceNumber + acknowledgmentNumber;
+            // Update the acknowledgment packet
+            acknowledgmentPacket = new Packet(expectedSequenceNumber, acknowledgmentNumber, acknowledgmentChecksum);
+            // Print String representation of the acknowledgment packet
+            System.out.println("New acknowledgmentPacket: " + acknowledgmentPacket.toString());
+            // Send acknowledgment to layer 3
+            toLayer3(B, acknowledgmentPacket);
+            // Increment the acknowledgmentsSent counter and update the expected sequence number
+            acknowledgmentsSent++;
+            expectedSequenceNumber++;
+            System.out.println("New expectedSequenceNumber: " + expectedSequenceNumber);
+        } else {
+            if (checksum != expectedChecksum) {
+                // Increment corrupted packets counter
+                corruptedPacketsCount++;
+            }
+            // If no last packet received (first message lost), return
+            if (acknowledgmentPacket.getSeqnum() <= 0) {
+                return;
+            } else {
+                // Otherwise, print String representation of the last acknowledgment packet and send it to layer 3
+                System.out.println("Last acknowledgmentPacket: " + acknowledgmentPacket.toString());
+                toLayer3(B, acknowledgmentPacket);
+            }
         }
-    } else {
-        // Send a duplicate ACK for the last correctly received packet
-        System.out.println("B Input: Out of order! Discarding...");
-        System.out.println("Packet SeqNo: " + packet.getSeqnum());
-        System.out.println("Expected SeqNo: " + expectedSeqNum);
-        int ackNum = (expectedSeqNum > FirstSeqNo) ? expectedSeqNum - 1 : LimitSeqNo - 1;
-        Packet ackPacket = new Packet(0, ackNum, checkSum(0, ackNum, ""), "");
-        toLayer3(1, ackPacket);
     }
-}
 
     // This routine will be called once, before any of your other B-side
     // routines are called. It can be used to do any required
     // initialization (e.g. of member variables you add to control the state
     // of entity B).
     protected void bInit() {
-        expectedSeqNum = FirstSeqNo;
+
     }
 
     // Use to print final statistics
     protected void Simulation_done() {
-        // TO PRINT THE STATISTICS, FILL IN THE DETAILS BY PUTTING VARIBALE NAMES. DO
+        // TO PRINT THE STATISTICS, FILL IN THE DETAILS BY PUTTING VARIABLE NAMES. DO
         // NOT CHANGE THE FORMAT OF PRINTED OUTPUT
+        //RTT CALCULATION
+        lostPacketsCount = packetsSent - receivedCount;
+        double sumRTT = 0;
+        double averageRTT;
+
+        //add total RTT measurements together
+        for (int i = 0; i < timeSent.length - 1; i++){
+            roundTripTimes.add(i, timeAcknowledged[i] - timeSent[i]);
+
+            //sum up the RTTs
+            sumRTT += roundTripTimes.get(i);
+        }
+        //divide by number of measurements to get the average rtt
+        averageRTT = sumRTT/roundTripTimes.size();
+
+        //calcualting the ratios
+        int totalPackets = packetsSent + retransmissionCount;
+        int totalNotLost = totalPackets - lostPacketsCount;
+        int totalNotCorrupted = totalPackets - corruptedPacketsCount;
+
+        double ratioLost = (lostPacketsCount / totalNotCorrupted);
+        double ratioCorrupted = (corruptedPacketsCount / totalNotLost);
+
+
+
         System.out.println("\n\n===============STATISTICS=======================");
-        System.out.println("Number of original packets transmitted by A:" + numSent);
-        System.out.println("Number of retransmissions by A:" + numRetransmissions);
-        System.out.println("Number of data packets delivered to layer 5 at B:" + "<YourVariableHere>");
-        System.out.println("Number of ACK packets sent by B:" + "<YourVariableHere>");
-        System.out.println("Number of corrupted packets:" + "<YourVariableHere>");
-        System.out.println("Ratio of lost packets:" + "<YourVariableHere>");
-        System.out.println("Ratio of corrupted packets:" + "<YourVariableHere>");
-        System.out.println("Average RTT:" + "<YourVariableHere>");
+        System.out.println("Number of original packets transmitted by A:" + packetsSent);
+        System.out.println("Number of retransmissions by A:" + retransmissionCount);
+        System.out.println("Number of data packets delivered to layer 5 at B:" + packetsToLayer5);
+        System.out.println("Number of ACK packets sent by B:" + acknowledgmentsSent);
+        System.out.println("Number of corrupted packets:" + corruptedPacketsCount);
+        System.out.println("Ratio of lost packets:" + ratioLost);
+        System.out.println("Ratio of corrupted packets:" + ratioCorrupted);
+        System.out.println("Average RTT:" + averageRTT);
         System.out.println("Average communication time:" + "<YourVariableHere>");
         System.out.println("==================================================");
 
@@ -380,7 +393,7 @@ protected void bInput(Packet packet) {
         System.out.println("\nEXTRA:");
         // EXAMPLE GIVEN BELOW
         // System.out.println("Example statistic you want to check e.g. number of ACK
-        // packets received by A :" + "<YourVariableHere>");
+        System.out.println("Number of ACK packets received by A:" + acknowledgmentsReceived);
     }
 
 }
