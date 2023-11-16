@@ -98,15 +98,26 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     // state information for A or B.
     // Also add any necessary methods (e.g. checksum of a String)
 
+    // Stats
+    private int numRetransmit = 0;
+    private int numSent = 0;
+    private int numLayer5 = 0;
+    private int numAckPackets = 0;
+    private int corrupedPackets = 0;
+    private double sumRTT = 0.0;
+    private double sumCommunication = 0.0;
+
     private int seqIndexA = 0;
     private Queue<Message> buffer = new LinkedList<>();
     private int[] windowA;
     private int[] windowTrackerA;
     private String[] messageTracker;
+    private double[] timerWindowA;
 
     private int[] windowB;
     private int[] windowTrackerB;
     private String[] messageTrackerB;
+    private String currentB = "";
 
     protected int checkSum(int seq, int ack, String newPayload) {
         int total = 0;
@@ -158,6 +169,17 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         String prev = "";
         for (int i = this.WindowSize - 1; i >= 0; i--) {
             String temp = tracker[i];
+            tracker[i] = prev;
+            prev = temp;
+        }
+        return tracker;
+    }
+
+    // Helper function to shift over times packages were sent
+    public double[] shiftTimerWindow(double[] tracker) {
+        double prev = 0.0;
+        for (int i = this.WindowSize - 1; i >= 0; i--) {
+            double temp = tracker[i];
             tracker[i] = prev;
             prev = temp;
         }
@@ -225,8 +247,13 @@ public class StudentNetworkSimulator extends NetworkSimulator {
             String stringMessage = currentMessage.getData();
             int check = checkSum(windowA[seqIndexA], 0, stringMessage);
             Packet packet = new Packet(windowA[seqIndexA], 0, check, stringMessage);
+
             // Save message in case we need to retransmit it
             messageTracker[seqIndexA] = stringMessage;
+
+            // Save time sent
+            timerWindowA[seqIndexA] = getTime();
+
             // Increase the index
             seqIndexA++;
 
@@ -234,9 +261,10 @@ public class StudentNetworkSimulator extends NetworkSimulator {
             System.out.println("///////////////////////////////");
             System.out.println("A OUTPUT: Sending this packet...");
             System.out.println(packet.toString());
-            System.out.println("seqIndexA: " + seqIndexA);
 
+            numSent++;
             toLayer3(0, packet);
+            // startTimer(0, RxmtInterval);
         }
 
     }
@@ -254,12 +282,13 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         System.out.println("windowA START: " + Arrays.toString(windowA));
         System.out.println("windowTrackerA START: " + Arrays.toString(windowTrackerA));
         System.out.println("messageTracker START: " + Arrays.toString(messageTracker));
-        System.out.println("seqIndexA: " + seqIndexA);
 
         // Check the checksum
         int check = checkSum(packet.getSeqnum(), packet.getAcknum(), packet.getPayload());
         if (check != packet.getChecksum()) {
             // Drop the packet
+            corrupedPackets++;
+            System.out.println("CORRUPT PACKET IN A, DROPPING");
             return;
         }
 
@@ -282,25 +311,35 @@ public class StudentNetworkSimulator extends NetworkSimulator {
             int[] newWindowA = windowA;
             int[] newWindowTrackerA = windowTrackerA;
             String[] newMessageTracker = messageTracker;
+            double[] newTimerWindowA = timerWindowA;
             for (int i = 0; i < shift; i++) {
+                // Save time taken
+                if (timerWindowA[0] < 0) {
+                    // If negative value is stored, that means that it was a retransmitted value
+                    sumCommunication += (getTime() - (-1.0 * timerWindowA[0]));
+                } else {
+                    // Normal value
+                    sumRTT += (getTime() - timerWindowA[0]);
+                }
+
                 newWindowA = shiftWindow(newWindowA);
                 newWindowTrackerA = shiftTracker(newWindowTrackerA);
                 newMessageTracker = shiftMessageTracker(newMessageTracker);
+                newTimerWindowA = shiftTimerWindow(newTimerWindowA);
                 seqIndexA = Math.max(0, seqIndexA - 1);
             }
             // Adjust values
             windowA = newWindowA;
             windowTrackerA = newWindowTrackerA;
             messageTracker = newMessageTracker;
+            timerWindowA = newTimerWindowA;
         }
 
         System.out.println("-----------------");
         System.out.println("windowA END: " + Arrays.toString(windowA));
         System.out.println("windowTrackerA END: " + Arrays.toString(windowTrackerA));
         System.out.println("messageTracker END: " + Arrays.toString(messageTracker));
-        System.out.println("seqIndexA: " + seqIndexA);
-        System.out.println("-----------------");
-
+        System.out.println("///////////////////////////////");
     }
 
     // This routine will be called when A's timer expires (thus generating a
@@ -308,6 +347,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     // the retransmission of packets. See startTimer() and stopTimer(), above,
     // for how the timer is started and stopped.
     protected void aTimerInterrupt() {
+        System.out.println("");
         System.out.println("//////////////////");
         System.out.println("A TIMER INTERRUPT");
 
@@ -320,10 +360,16 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         for (int i = 0; i < windowTrackerA.length; i++) {
             // If 0 then has not been acked in window yet
             if (windowTrackerA[i] == 0 && messageTracker[i] != "") {
+                // Prepare packet for retransmission
                 String payload = messageTracker[i];
                 int check = checkSum(windowA[i], 0, payload);
                 Packet retransmit = new Packet(windowA[i], 0, check, payload);
                 System.out.println("Retransmitting... " + retransmit.toString());
+
+                // Set variables to help with stats
+                numRetransmit += 1;
+                timerWindowA[i] = Math.min((timerWindowA[i] * -1.0), timerWindowA[i]);
+
                 toLayer3(0, retransmit);
             }
         }
@@ -340,15 +386,14 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     protected void aInit() {
         windowTrackerA = new int[this.WindowSize];
         windowA = new int[this.WindowSize];
-        for (int i = 0; i < this.WindowSize; i++) {
-            windowA[i] = i;
-        }
-
         messageTracker = new String[this.WindowSize];
-        for (int x = 0; x < this.WindowSize; x++) {
-            messageTracker[x] = "";
-        }
+        timerWindowA = new double[this.WindowSize];
 
+        for (int i = 0; i < this.WindowSize; i++) {
+            messageTracker[i] = "";
+            windowA[i] = i;
+            timerWindowA[i] = 0.0;
+        }
     }
 
     // This routine will be called whenever a packet sent from the B-side
@@ -369,14 +414,17 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         int check = checkSum(packet.getSeqnum(), packet.getAcknum(), packet.getPayload());
         if (check != packet.getChecksum()) {
             // Drop the packet
+            System.out.println("");
+            System.out.println("CORRUPT PACKET IN B, DROPPING");
+            corrupedPackets++;
             return;
         }
 
         // Add to tracker
         int trackerIndex = seqNumToIndex(windowB, packet.getSeqnum());
         // If out of bounds, we have already acked so re send it
-        if (trackerIndex == -1) {
-            System.out.println("PACKET OUT OF BOUNDS IN B INPUT");
+        if (trackerIndex == -1 || (currentB != "" && packet.getPayload().charAt(0) < currentB.charAt(0))) {
+            System.out.println("Retransmit... Packet has been received already");
             Packet retransmit = new Packet(0, packet.getSeqnum(), packet.getSeqnum());
             toLayer3(1, retransmit);
             return;
@@ -396,14 +444,23 @@ public class StudentNetworkSimulator extends NetworkSimulator {
                 // Send ack back
                 Packet ackPacket = new Packet(0, newWindowB[0], newWindowB[0]);
                 toLayer3(1, ackPacket);
+                numAckPackets++;
 
                 // Send to layer 5
                 toLayer5(newMessageTrackerB[0]);
+                numLayer5++;
 
+                // Set new vars
+
+                currentB = newMessageTrackerB[0];
+                if (currentB.charAt(0) == 'z') {
+                    currentB = "";
+                }
                 newWindowB = shiftWindow(newWindowB);
                 newWindowTrackerB = shiftTracker(newWindowTrackerB);
                 newMessageTrackerB = shiftMessageTracker(messageTrackerB);
             }
+            // Update variables
             windowB = newWindowB;
             windowTrackerB = newWindowTrackerB;
             messageTrackerB = newMessageTrackerB;
@@ -414,7 +471,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         System.out.println("windowB END: " + Arrays.toString(windowB));
         System.out.println("windowTrackerB END: " + Arrays.toString(windowTrackerB));
         System.out.println("messageTrackerB END: " + Arrays.toString(messageTrackerB));
-        System.out.println("-----------------");
+        System.out.println("///////////////////////////////");
 
     }
 
@@ -437,18 +494,22 @@ public class StudentNetworkSimulator extends NetworkSimulator {
 
     // Use to print final statistics
     protected void Simulation_done() {
+        double ratioLost = ((double) (numRetransmit - corrupedPackets) / (numSent + numRetransmit + numAckPackets));
+        double ratioCorrupted = ((double) corrupedPackets
+                / (numSent + numRetransmit + numAckPackets - numRetransmit - corrupedPackets));
+
         // TO PRINT THE STATISTICS, FILL IN THE DETAILS BY PUTTING VARIBALE NAMES. DO
         // NOT CHANGE THE FORMAT OF PRINTED OUTPUT
         System.out.println("\n\n===============STATISTICS=======================");
-        System.out.println("Number of original packets transmitted by A:" + "<YourVariableHere>");
-        System.out.println("Number of retransmissions by A:" + "<YourVariableHere>");
-        System.out.println("Number of data packets delivered to layer 5 at B:" + "<YourVariableHere>");
-        System.out.println("Number of ACK packets sent by B:" + "<YourVariableHere>");
-        System.out.println("Number of corrupted packets:" + "<YourVariableHere>");
-        System.out.println("Ratio of lost packets:" + "<YourVariableHere>");
-        System.out.println("Ratio of corrupted packets:" + "<YourVariableHere>");
-        System.out.println("Average RTT:" + "<YourVariableHere>");
-        System.out.println("Average communication time:" + "<YourVariableHere>");
+        System.out.println("Number of original packets transmitted by A: " + numSent);
+        System.out.println("Number of retransmissions by A: " + numRetransmit);
+        System.out.println("Number of data packets delivered to layer 5 at B: " + numLayer5);
+        System.out.println("Number of ACK packets sent by B: " + numAckPackets);
+        System.out.println("Number of corrupted packets: " + corrupedPackets);
+        System.out.println("Ratio of lost packets: " + ratioLost);
+        System.out.println("Ratio of corrupted packets: " + ratioCorrupted);
+        System.out.println("Average RTT: " + (sumRTT / numSent));
+        System.out.println("Average communication time: " + (sumCommunication / numRetransmit));
         System.out.println("==================================================");
 
         // PRINT YOUR OWN STATISTIC HERE TO CHECK THE CORRECTNESS OF YOUR PROGRAM
@@ -457,5 +518,4 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         // System.out.println("Example statistic you want to check e.g. number of ACK
         // packets received by A :" + "<YourVariableHere>");
     }
-
 }
