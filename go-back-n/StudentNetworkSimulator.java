@@ -116,7 +116,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     // Int variable for keeping track of the base of the sending window
     private int base = 1;
     // Int variable for tracking the next sequence number B expects to receive
-    private int expectedSequenceNumber = 1;
+    private int expectedSequenceNumber = 0;
     // Initialize a new packet for impending acknowledgment transmission later
     Packet acknowledgmentPacket = new Packet(0, 0, 0);
     // Int variable for tracking the number of packets sent
