@@ -101,29 +101,30 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     // Window buffer for tracking sent packets
     Packet[] sentBuffer;
 
-    // Double list for storing communication times
+    // Double list for storing RTT times
     LinkedList<Double> roundTripTimes = new LinkedList<Double>();
+    //Double list for storing communication times
+    LinkedList<Double> commTimes = new LinkedList<Double>();
     // Double array for tracking sent and acknowledgment times
     double[] timeSent;
     double[] timeAcknowledged;
+    //two more double arrays for calculating RTT (as opposed to communication time)
+    double[] timeSentRTT;
+    double[] timeAcknowledgedRTT;
     // Int variable for tracking the next sequence number A will send to B
     private int nextSequenceNumber = FirstSeqNo;
     // Int variable for keeping track of the base of the sending window
     private int base = 1;
     // Int variable for tracking the next sequence number B expects to receive
-    private int expectedSequenceNumber = 1;
+    private int expectedSequenceNumber = 0;
     // Initialize a new packet for impending acknowledgment transmission later
     Packet acknowledgmentPacket = new Packet(0, 0, 0);
     // Int variable for tracking the number of packets sent
     private int packetsSent = 0; 
     // Int variable tracking the number of retransmissions
     private int retransmissionCount = 0;
-    // Int variable tracking the number of packets received 
-    private int receivedCount = 0;
     // Int variable for the number of packets sent to layer 5
     private int packetsToLayer5 = 0;
-    // Int variable tracking the number of lost packets
-    private int lostPacketsCount = 0;
     // Int variable tracking the number of corrupted packets received
     private int corruptedPacketsCount = 0;
     // Int variable for the number of ACKs sent by B
@@ -164,6 +165,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     protected void aOutput(Message message) {
         // Store data from received message in String variable for use in payload later
         String data = message.getData();
+
         if (nextSequenceNumber < base + WindowSize) {
             // Generate checksum for impending packet creation
             int checksum = calculateChecksum(nextSequenceNumber, -1, data);
@@ -171,6 +173,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
             Packet packet = new Packet(nextSequenceNumber, -1, checksum, data);
             // Print String representation of the packet
             System.out.println("aOutput received: " + packet.toString());
+
             // If we reached the end of the array...
             if (nextSequenceNumber > WindowSize) {
                 System.out.println("Wrapping Around");
@@ -180,12 +183,14 @@ public class StudentNetworkSimulator extends NetworkSimulator {
                 // Otherwise, just add the new packet to the sending buffer (will be removed once acknowledgment received)        
                 sentBuffer[nextSequenceNumber] = packet;
             }
+
             // Send the packet to layer 3 of B
             toLayer3(A, packet);
             // Record start time and add to the list
-            long startTime = System.nanoTime();
+            double startTime = getTime();
             System.out.println("Time sent: " + startTime);
             timeSent[nextSequenceNumber] = startTime;
+            timeSentRTT[nextSequenceNumber] = startTime;
             // Increment the packetsSent counter
             packetsSent++;
             System.out.println("aOutput sent: " + packet.toString());
@@ -204,9 +209,15 @@ public class StudentNetworkSimulator extends NetworkSimulator {
 
     protected void aInput(Packet receivedPacket) {
         // Record acknowledgment time and add to the list
-        double acknowledgmentTime = System.nanoTime();
+        double acknowledgmentTime = getTime();
         System.out.println("Acknowledgment time: " + acknowledgmentTime);
         timeAcknowledged[nextSequenceNumber] = acknowledgmentTime;
+
+        //check to make sure that the current packet wasn't retransmitted
+        //if it was, then take no RTT measurement
+        if (timeSentRTT[nextSequenceNumber] == 0.0){
+            timeAcknowledgedRTT[nextSequenceNumber] = 0.0;
+        }
         // Make a copy of the received packet and store it as Packet 'packet'
         Packet packet = new Packet(receivedPacket);
         // Print String representation of Packet 'packet'
@@ -239,6 +250,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
 
     // This routine will be called when A's timer expires.
     protected void aTimerInterrupt() {
+        timeSentRTT[nextSequenceNumber] = 0.0;
         // Start a timer for retransmission
         startTimer(A, RxmtInterval);
         // Resend all packets previously sent but not yet acknowledged (waiting in send buffer)
@@ -275,6 +287,8 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         sentBuffer = new Packet[LimitSeqNo];
         timeSent = new double[1050];
         timeAcknowledged = new double[1050];
+        timeAcknowledgedRTT = new double[1050];
+        timeSentRTT = new double[1050];
     }
 
     // This routine will be called whenever a packet numSent from the A-side
@@ -282,8 +296,6 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     // arrives at the B-side. "packet" is the (possibly corrupted) packet
     // numSent from the A-side.
     protected void bInput(Packet receivedPacket) {
-        // Increment the received counter
-        receivedCount++;
         // Make a copy of the received packet and store it as Packet 'packet'
         Packet packet = new Packet(receivedPacket);
         // Print String representation of Packet 'packet'
@@ -352,41 +364,48 @@ public class StudentNetworkSimulator extends NetworkSimulator {
     protected void Simulation_done() {
         // TO PRINT THE STATISTICS, FILL IN THE DETAILS BY PUTTING VARIABLE NAMES. DO
         // NOT CHANGE THE FORMAT OF PRINTED OUTPUT
-        //RTT CALCULATION
-        lostPacketsCount = packetsSent - receivedCount;
+        //RTT and Communication Time Calculation
         double sumRTT = 0;
         double averageRTT;
+        double sumComm = 0;
+        double averageComm;
 
-        //add total RTT measurements together
+        //add total communication times
         for (int i = 0; i < timeSent.length - 1; i++){
-            roundTripTimes.add(i, timeAcknowledged[i] - timeSent[i]);
-
-            //sum up the RTTs
-            sumRTT += roundTripTimes.get(i);
+            commTimes.add(i, timeAcknowledged[i] - timeSent[i]);
+            sumComm += commTimes.get(i);
         }
-        //divide by number of measurements to get the average rtt
+        int x = 0;
+        for (int i = 0; i < timeSentRTT.length - 1; i++){
+            if(timeAcknowledgedRTT[i] != 0.0 && timeSentRTT[i] != 0.0){
+                roundTripTimes.add(x, timeAcknowledgedRTT[i] - timeSentRTT[i]);
+                x++;
+                sumRTT += roundTripTimes.get(x);
+            }
+        }
+
+        //divide by number of measurements to get the average rtt and comm times
+        averageComm = sumComm / commTimes.size();
         averageRTT = sumRTT/roundTripTimes.size();
 
-        //calcualting the ratios
-        int totalPackets = packetsSent + retransmissionCount;
-        double totalNotLost = totalPackets - lostPacketsCount;
-        double totalNotCorrupted = totalPackets - corruptedPacketsCount;
+        int numLost = retransmissionCount - corruptedPacketsCount;
 
-        double ratioLost = (lostPacketsCount / totalNotCorrupted);
-        double ratioCorrupted = (corruptedPacketsCount / totalNotLost);
+        //calcualting the ratios
+        double ratioCorrupted = (corruptedPacketsCount + 0.0) / ((packetsSent + retransmissionCount) + acknowledgmentsSent - (retransmissionCount - corruptedPacketsCount));
+        double ratioLost = ((retransmissionCount + 0.0) - corruptedPacketsCount) / ((packetsSent + retransmissionCount) + acknowledgmentsSent);
 
 
 
         System.out.println("\n\n===============STATISTICS=======================");
-        System.out.println("Number of original packets transmitted by A:" + packetsSent);
+        System.out.println("Number of original packets transmitted by A: " + packetsSent);
         System.out.println("Number of retransmissions by A:" + retransmissionCount);
-        System.out.println("Number of data packets delivered to layer 5 at B:" + packetsToLayer5);
-        System.out.println("Number of ACK packets sent by B:" + acknowledgmentsSent);
-        System.out.println("Number of corrupted packets:" + corruptedPacketsCount);
-        System.out.println("Ratio of lost packets:" + ratioLost);
-        System.out.println("Ratio of corrupted packets:" + ratioCorrupted);
-        System.out.println("Average RTT:" + averageRTT);
-        System.out.println("Average communication time:" + "<YourVariableHere>");
+        System.out.println("Number of data packets delivered to layer 5 at B: " + packetsToLayer5);
+        System.out.println("Number of ACK packets sent by B: " + acknowledgmentsSent);
+        System.out.println("Number of corrupted packets: " + corruptedPacketsCount);
+        System.out.println("Ratio of lost packets: " + ratioLost);
+        System.out.println("Ratio of corrupted packets: " + ratioCorrupted);
+        System.out.println("Average RTT: " + Math.abs(averageRTT) + " time units");
+        System.out.println("Average communication time: " + Math.abs(averageComm) + " time units");
         System.out.println("==================================================");
 
         // PRINT YOUR OWN STATISTIC HERE TO CHECK THE CORRECTNESS OF YOUR PROGRAM
@@ -394,6 +413,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         // EXAMPLE GIVEN BELOW
         // System.out.println("Example statistic you want to check e.g. number of ACK
         System.out.println("Number of ACK packets received by A:" + acknowledgmentsReceived);
+        System.out.println("Number of packets that were lost: " + numLost);
     }
 
 }
