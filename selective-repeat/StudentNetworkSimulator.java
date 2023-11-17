@@ -428,7 +428,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
 
         // Add to tracker
         int trackerIndex = seqNumToIndex(windowB, packet.getSeqnum());
-        // If out of bounds, we have already acked so re send it
+        // If out of bounds, we have already acked the packet so re send ack
         if (trackerIndex == -1 || (currentB != "" && packet.getPayload().charAt(0) < currentB.charAt(0))) {
             System.out.println("Retransmit... Packet has been received already");
             Packet retransmit = new Packet(0, packet.getSeqnum(), packet.getSeqnum());
