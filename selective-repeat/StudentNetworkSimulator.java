@@ -491,6 +491,7 @@ public class StudentNetworkSimulator extends NetworkSimulator {
         // Variable insantiations
         windowTrackerB = new int[this.WindowSize];
         windowB = new int[this.WindowSize];
+        messageTrackerB = new String[this.WindowSize];
 
         // Fill up windows with desired starting data
         for (int i = 0; i < this.WindowSize; i++) {
